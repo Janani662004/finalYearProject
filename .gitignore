@@ -1,0 +1,4 @@
+node_modules
+.env
+models/
+!models/GDRIVE_LINK.txt
