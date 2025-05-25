@@ -3,143 +3,162 @@ import { View, Text, TextInput, Button, StyleSheet, Alert, ActivityIndicator } f
 import { Audio } from 'expo-av';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { supabase } from '../lib/supabase';
-import { submitJournalEntry } from '../lib/journalentry'; // Your custom submit function
 
 type RouteParams = {
   emotion: string;
   date: string;
 };
 
-const JournalEntry = () => {
+const JournalEntryScreen = () => {
   const navigation = useNavigation();
   const route = useRoute();
-
-  const [textEntry, setTextEntry] = useState('');
   const [recording, setRecording] = useState<Audio.Recording | null>(null);
+  const [textEntry, setTextEntry] = useState('');
   const [audioUri, setAudioUri] = useState('');
   const [emotionLabel, setEmotionLabel] = useState('');
   const [entryDate, setEntryDate] = useState('');
-  const [loading, setLoading] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
     if (route.params) {
       const { emotion, date } = route.params as RouteParams;
+      console.log('📦 Received route params:', emotion, date);
       setEmotionLabel(emotion);
       setEntryDate(date);
+    } else {
+      console.warn('⚠️ No route params found!');
     }
   }, [route.params]);
 
   const startRecording = async () => {
     try {
-      const permission = await Audio.requestPermissionsAsync();
-      if (permission.status !== 'granted') {
-        Alert.alert('Permission required', 'Please grant audio recording permission');
-        return;
-      }
+      console.log('🎙️ Requesting permissions..');
+      await Audio.requestPermissionsAsync();
+
+      console.log('⏺️ Starting recording..');
       await Audio.setAudioModeAsync({
         allowsRecordingIOS: true,
         playsInSilentModeIOS: true,
       });
+
       const { recording } = await Audio.Recording.createAsync(
         Audio.RecordingOptionsPresets.HIGH_QUALITY
       );
       setRecording(recording);
-    } catch (error) {
-      Alert.alert('Error', 'Could not start recording.');
+      console.log('🟢 Recording started');
+    } catch (err) {
+      console.error('❌ Failed to start recording', err);
     }
   };
 
   const stopRecording = async () => {
+    console.log('⏹️ Stopping recording..');
     if (!recording) return;
+
     try {
       await recording.stopAndUnloadAsync();
       const uri = recording.getURI();
-      if (uri) setAudioUri(uri);
+      if (uri) {
+        setAudioUri(uri);
+        console.log('✅ Recording saved at', uri);
+      }
       setRecording(null);
-    } catch (error) {
-      Alert.alert('Error', 'Could not stop recording properly.');
+    } catch (err) {
+      console.error('❌ Error stopping recording:', err);
     }
   };
 
-  const getMimeType = (uri: string) => {
-    if (uri.endsWith('.m4a')) return 'audio/mp4';
-    if (uri.endsWith('.mp3')) return 'audio/mpeg';
-    return 'application/octet-stream';
-  };
-
   const uploadAudioToSupabase = async (uri: string) => {
+    const fileName = `audio_${Date.now()}.m4a`;
+    const fileType = 'audio/x-m4a';
+
     try {
       const response = await fetch(uri);
       const blob = await response.blob();
 
-      const fileExt = uri.split('.').pop();
-      const fileName = `audio_${Date.now()}.${fileExt}`;
-      const contentType = getMimeType(uri);
-
       const { error: uploadError } = await supabase.storage
         .from('journal-audio')
         .upload(`audios/${fileName}`, blob, {
-          contentType,
+          contentType: fileType,
           upsert: true,
         });
 
-      if (uploadError) throw uploadError;
+      if (uploadError) {
+        console.error('❌ Upload failed:', uploadError);
+        return null;
+      }
 
-      const { data } = supabase.storage
+      const { data: audioUrl } = supabase.storage
         .from('journal-audio')
         .getPublicUrl(`audios/${fileName}`);
 
-      return data.publicUrl;
-    } catch (error) {
-      Alert.alert('Upload Error', 'Failed to upload audio.');
+      console.log('🔗 Uploaded Audio URL:', audioUrl?.publicUrl);
+      return audioUrl?.publicUrl;
+    } catch (err) {
+      console.error('❌ Error uploading audio blob:', err);
       return null;
     }
   };
 
   const handleSubmit = async () => {
-    setLoading(true);
+    if (!entryDate || !emotionLabel) {
+      Alert.alert('Missing Data', 'Entry date or emotion label is missing.');
+      return;
+    }
+
+    setIsSubmitting(true);
     try {
-      // Get user info properly (async)
       const {
         data: { user },
-        error: userError,
+        error: userFetchError,
       } = await supabase.auth.getUser();
 
-      if (userError || !user) {
-        Alert.alert('Error', 'You must be logged in to submit an entry.');
-        setLoading(false);
-        return;
+      if (userFetchError || !user) {
+        throw new Error('⚠️ User not authenticated');
       }
 
-      let uploadedAudioUrl = null;
+      let audioUrl = '';
       if (audioUri) {
-        uploadedAudioUrl = await uploadAudioToSupabase(audioUri);
-        if (!uploadedAudioUrl) {
-          setLoading(false);
-          return; // Abort if upload failed
+        const uploadedUrl = await uploadAudioToSupabase(audioUri);
+        if (!uploadedUrl) {
+          throw new Error('❌ Failed to upload audio');
         }
+        audioUrl = uploadedUrl;
       }
 
-      // Call your submit function with correct camelCase keys
-      const result = await submitJournalEntry({
-        userId: user.id,
-        textEntry,
-        audioUrl: uploadedAudioUrl ?? undefined,
-        emotionLabel,
-        entryDate,
-      });
+      const { error } = await supabase.from('journal_entries').insert([
+        {
+          user_id: user.id,
+          text_entry: textEntry,
+          audio_entry: audioUrl,
+          emotion_label: emotionLabel,
+          timestamp: entryDate,
+        },
+      ]);
 
-      if (result.error) {
-        Alert.alert('Submission Error', 'Failed to submit journal entry.');
+      if (error) {
+        console.error('❌ Insert failed:', error);
+        Alert.alert('Error', 'Failed to save journal entry.');
       } else {
+        console.log('✅ Journal entry saved!');
         Alert.alert('Success', 'Journal entry submitted!');
         navigation.goBack();
       }
-    } catch (err) {
-      Alert.alert('Error', 'Something went wrong.');
+    } catch (err: any) {
+      console.error('❌ handleSubmit Error:', err.message);
+      Alert.alert('Error', err.message);
+    } finally {
+      setIsSubmitting(false);
     }
-    setLoading(false);
   };
+
+  if (!entryDate || !emotionLabel) {
+    return (
+      <View style={styles.container}>
+        <Text style={styles.errorText}>❗ Missing entry date or emotion label.</Text>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
@@ -161,21 +180,32 @@ const JournalEntry = () => {
         />
       </View>
 
-      <Button title={loading ? 'Submitting...' : 'Submit Entry'} onPress={handleSubmit} disabled={loading} />
+      <Button title="Submit Entry" onPress={handleSubmit} disabled={isSubmitting} />
 
-      {loading && <ActivityIndicator style={{ marginTop: 10 }} size="small" color="#6C63FF" />}
+      {isSubmitting && <ActivityIndicator size="large" color="#6C63FF" style={{ marginTop: 20 }} />}
 
       <Text style={styles.audioText}>
-        {audioUri ? `Audio recorded at: ${audioUri}` : 'No audio recorded yet'}
+        {audioUri ? `Audio: ${audioUri}` : 'No audio recorded yet'}
       </Text>
     </View>
   );
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 20, backgroundColor: '#fff' },
-  header: { fontSize: 24, fontWeight: 'bold' },
-  subHeader: { fontSize: 18, marginVertical: 10, color: '#6C63FF' },
+  container: {
+    flex: 1,
+    padding: 20,
+    backgroundColor: '#fff',
+  },
+  header: {
+    fontSize: 24,
+    fontWeight: 'bold',
+  },
+  subHeader: {
+    fontSize: 18,
+    marginVertical: 10,
+    color: '#6C63FF',
+  },
   textInput: {
     height: 150,
     borderColor: '#ccc',
@@ -184,8 +214,20 @@ const styles = StyleSheet.create({
     marginBottom: 20,
     fontSize: 16,
   },
-  buttonContainer: { marginBottom: 20 },
-  audioText: { marginTop: 20, fontStyle: 'italic', color: '#888' },
+  buttonContainer: {
+    marginBottom: 20,
+  },
+  audioText: {
+    marginTop: 20,
+    fontStyle: 'italic',
+    color: '#888',
+  },
+  errorText: {
+    fontSize: 18,
+    color: 'red',
+    textAlign: 'center',
+    marginTop: 50,
+  },
 });
 
-export default JournalEntry;
+export default JournalEntryScreen;

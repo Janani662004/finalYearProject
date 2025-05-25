@@ -4,6 +4,7 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
+  Platform,
 } from 'react-native';
 import { Calendar, DateData } from 'react-native-calendars';
 import DateTimePicker, {
@@ -13,7 +14,7 @@ import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
 type RootStackParamList = {
-  JournalEntryScreen: { date: string; emotion: string };
+  JournalEntryScreen: { date: string; emotion: string; time: string };
 };
 
 const emotions = [
@@ -31,7 +32,6 @@ const JournalScreen = () => {
   const [selectedDate, setSelectedDate] = useState('');
   const [showTimePicker, setShowTimePicker] = useState(false);
   const [time, setTime] = useState(new Date());
-
   const [selectedEmotion, setSelectedEmotion] = useState('');
 
   const handleDateSelect = (day: DateData) => {
@@ -42,9 +42,20 @@ const JournalScreen = () => {
     event: DateTimePickerEvent,
     selectedTime?: Date,
   ) => {
+    if (event.type === 'dismissed') return;
     const currentTime = selectedTime || time;
-    setShowTimePicker(false);
+    setShowTimePicker(Platform.OS === 'ios');
     setTime(currentTime);
+  };
+
+  // *** Here's the corrected formatTime function replacing your old one ***
+  const formatTime = (date: Date) => {
+    const hours = date.getHours();
+    const minutes = date.getMinutes();
+    const ampm = hours >= 12 ? 'PM' : 'AM';
+    const hrs = hours % 12 || 12;
+    const mins = minutes < 10 ? `0${minutes}` : minutes; // fix for minutes under 10
+    return `${hrs}:${mins} ${ampm}`;
   };
 
   const handleJournalEntry = () => {
@@ -55,7 +66,8 @@ const JournalScreen = () => {
 
     navigation.navigate('JournalEntryScreen', {
       date: selectedDate,
-      emotion: selectedEmotion, // Pass the selected emotion here
+      emotion: selectedEmotion,
+      time: formatTime(time),
     });
   };
 
@@ -100,7 +112,9 @@ const JournalScreen = () => {
         style={styles.button}
         onPress={() => setShowTimePicker(true)}
       >
-        <Text style={styles.buttonText}>Select Time</Text>
+        <Text style={styles.buttonText}>
+          {`Time: ${formatTime(time)} (Tap to change)`}
+        </Text>
       </TouchableOpacity>
 
       {showTimePicker && (
@@ -163,15 +177,16 @@ const styles = StyleSheet.create({
     fontSize: 26,
   },
   button: {
-    backgroundColor: '#6C63FF',
+    backgroundColor: '#EFEFFF',
     padding: 12,
     borderRadius: 10,
     alignItems: 'center',
     marginTop: 10,
   },
   buttonText: {
-    color: '#fff',
+    color: '#6C63FF',
     fontSize: 16,
+    fontWeight: '500',
   },
   journalButton: {
     backgroundColor: '#6C63FF',

@@ -1,149 +1,157 @@
-import psycopg2
-import select
-import time
-from supabase import create_client, Client
-from transformers import XLNetTokenizer, XLNetForSequenceClassification, Wav2Vec2Processor, Wav2Vec2ForSequenceClassification
+import os
+import datetime
 import torch
 import torchaudio
-import numpy as np
-from datetime import datetime
-import os
+import torchaudio.transforms as T
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from supabase import create_client
+from transformers import AutoTokenizer, AutoModelForSequenceClassification, Wav2Vec2Processor, Wav2Vec2ForSequenceClassification
+from apscheduler.schedulers.background import BackgroundScheduler
+from urllib.parse import urlparse
+import requests
 from dotenv import load_dotenv
+import tempfile
 
+
+# Load environment variables
 load_dotenv()
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+BUCKET_NAME = "journal-audio"
 
-# ========== SUPABASE SETUP ==========
-SUPABASE_URL = "https://cfdtkaiekghgymciyqxd.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNmZHRrYWlla2doZ3ltY2l5cXhkIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc0MzY5NzE1MSwiZXhwIjoyMDU5MjczMTUxfQ.-XBNHaPzvLgfU8jneukdfdoHG-GUjBi514vSD5c8jzI"
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+# Initialize Supabase client
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# ========== MODEL SETUP ==========
-text_model_path = r"D:\project\models\reduced_xlnet"
-tokenizer = XLNetTokenizer.from_pretrained(text_model_path)
-text_model = XLNetForSequenceClassification.from_pretrained(text_model_path)
-text_model.eval()
+# Load models
+TEXT_MODEL_PATH = r"D:\project\models\reduced_xlnet"
+AUDIO_MODEL_PATH = r"D:\project\models\wav2vec2"
+tokenizer = AutoTokenizer.from_pretrained(TEXT_MODEL_PATH)
+text_model = AutoModelForSequenceClassification.from_pretrained(TEXT_MODEL_PATH).eval()
+audio_processor = Wav2Vec2Processor.from_pretrained(AUDIO_MODEL_PATH)
+audio_model = Wav2Vec2ForSequenceClassification.from_pretrained(AUDIO_MODEL_PATH).eval()
 
-voice_model_path = r"D:\project\models\wav2vec2"
-processor = Wav2Vec2Processor.from_pretrained(voice_model_path)
-voice_model = Wav2Vec2ForSequenceClassification.from_pretrained(voice_model_path)
-voice_model.eval()
+# Emotion labels
+labels = ['admiration', 'amusement', 'anger', 'annoyance', 'approval', 'caring',
+          'confusion', 'curiosity', 'desire', 'disappointment', 'disapproval',
+          'disgust', 'embarrassment', 'excitement', 'fear', 'gratitude', 'grief',
+          'joy', 'love', 'nervousness', 'optimism', 'pride', 'realization',
+          'relief', 'remorse', 'sadness', 'surprise', 'neutral']
 
-# ========== TEXT EMOTION ANALYSIS ==========
+# Analyze text
 def analyze_text(text):
-    if not text or text.strip() == "":
-        return "Neutral", []
-
     inputs = tokenizer(text, return_tensors="pt", truncation=True, padding=True)
     with torch.no_grad():
-        logits = text_model(**inputs).logits
+        outputs = text_model(**inputs)
+        probs = torch.nn.functional.softmax(outputs.logits, dim=-1)
+    top_idx = torch.argmax(probs, dim=-1).item()
+    return labels[top_idx], round(probs[0][top_idx].item(), 3), probs[0].tolist()
 
-    probs = torch.nn.functional.softmax(logits, dim=1)[0]
-    pred_id = torch.argmax(probs).item()
-
-    label = text_model.config.id2label.get(pred_id, "Unknown")
-    if label == "Unknown":
-        print(f"⚠️ Unknown text label for ID {pred_id}: {text[:50]}...")
-
-    return label, probs.tolist()
-
-# ========== AUDIO EMOTION ANALYSIS ==========
+# Analyze audio
 def analyze_audio(audio_path):
-    try:
-        speech, rate = torchaudio.load(audio_path)
-    except Exception as e:
-        print(f"❌ Failed to load audio: {audio_path} – {e}")
-        return "Unknown", []
-
-    if rate != 16000:
-        resampler = torchaudio.transforms.Resample(orig_freq=rate, new_freq=16000)
-        speech = resampler(speech)
-
-    inputs = processor(speech.squeeze(), sampling_rate=16000, return_tensors="pt", padding=True)
+    waveform, sample_rate = torchaudio.load(audio_path)
+    if sample_rate != 16000:
+        resample = T.Resample(orig_freq=sample_rate, new_freq=16000)
+        waveform = resample(waveform)
+    if waveform.shape[0] > 1:
+        waveform = torch.mean(waveform, dim=0, keepdim=True)
+    inputs = audio_processor(waveform.squeeze(), sampling_rate=16000, return_tensors="pt", padding=True)
     with torch.no_grad():
-        logits = voice_model(**inputs).logits
+        outputs = audio_model(**inputs)
+        probs = torch.nn.functional.softmax(outputs.logits, dim=-1)
+    top_idx = torch.argmax(probs, dim=-1).item()
+    return labels[top_idx], round(probs[0][top_idx].item(), 3), probs[0].tolist()
 
-    probs = torch.nn.functional.softmax(logits, dim=1)[0]
-    pred_id = torch.argmax(probs).item()
+# Use ffmpeg via torchaudio to convert & save to 16kHz mono wav
+def download_and_convert_to_wav(url):
+    temp_input = tempfile.NamedTemporaryFile(delete=False)
+    temp_output = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    response = requests.get(url)
+    if response.status_code != 200:
+        raise Exception("Failed to download audio.")
+    temp_input.write(response.content)
+    temp_input.close()
 
-    label = voice_model.config.id2label.get(pred_id, "Unknown")
-    if label == "Unknown":
-        print(f"⚠️ Unknown audio label for ID {pred_id} – from file: {audio_path}")
-
-    return label, probs.tolist()
-
-# ========== PIPELINE ==========
-def run_pipeline():
-    print("🚀 Running journal pipeline...")
-
-    response = supabase.table("journal_entries").select("*").execute()
-    entries = response.data
-
-    for entry in entries:
-        user_id = entry["user_id"]
-        timestamp = entry["timestamp"]
-        text_entry = entry.get("text_entry")
-        audio_path = entry.get("audio_entry")
-
-        text_label, text_scores = "Neutral", []
-        audio_label, audio_scores = "Neutral", []
-
-        if text_entry:
-            text_label, text_scores = analyze_text(text_entry)
-
-        if audio_path:
-            audio_label, audio_scores = analyze_audio(audio_path)
-
-        # Compute day label (priority: text > audio)
-        day_label = text_label if text_label != "Unknown" else audio_label
-        day_score = 0.0
-        all_scores = text_scores + audio_scores
-        if all_scores:
-            day_score = max(all_scores)
-
-        # Skip insert if both labels are Unknown
-        if text_label == "Unknown" and audio_label == "Unknown":
-            print(f"⚠️ Skipping entry for user {user_id} – both labels Unknown")
-            continue
-
-        data = {
-            "user_id": user_id,
-            "timestamp": timestamp,
-            "text_emotion_label": text_label,
-            "text_scores": text_scores,
-            "audio_emotion_label": audio_label,
-            "audio_scores": audio_scores,
-            "day_label": day_label,
-            "day_score": day_score
-        }
-
-        print("🔄 Inserting into ai_analysis:", data)
-        supabase.table("ai_analysis").insert(data).execute()
-        print(f"✅ Entry for user {user_id} processed.")
-
-# ========== LISTENER SETUP ==========
-def listen_for_new_entries():
-    conn = psycopg2.connect(
-    host="cfdtkaiekghgymciyqxd.supabase.co",
-    port=5432,
-    database="postgres",
-    user="postgres",
-    password="your-real-db-password"
+    torchaudio.backend.sox_io_backend.save(
+        temp_output.name,
+        *torchaudio.load(temp_input.name, normalize=True)
     )
 
-    conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
-    cursor = conn.cursor()
-    cursor.execute("LISTEN journal_entries_insert;")
-    print("👂 Listening for new journal entries...")
+    # Clean input
+    os.remove(temp_input.name)
+    return temp_output.name
 
-    while True:
-        if select.select([conn], [], [], 5) == ([], [], []):
-            print("⏳ Waiting for notifications...")
-        else:
-            conn.poll()
-            while conn.notifies:
-                notify = conn.notifies.pop()
-                print(f"🔔 Received notification: {notify.payload}")
-                run_pipeline()
+# Public Supabase URL fetch
+def get_audio_public_url(audio_url):
+    parsed = urlparse(audio_url)
+    prefix = f"/storage/v1/object/public/{BUCKET_NAME}/"
+    path = parsed.path[len(prefix):] if parsed.path.startswith(prefix) else parsed.path.lstrip('/')
+    return supabase.storage.from_(BUCKET_NAME).get_public_url(path)
 
-if __name__ == "__main__":
-    listen_for_new_entries()
+# Fetch new journal entries
+def fetch_journal_entries():
+    resp = supabase.table("journal_entries").select("*").eq("processed", False).execute()
+    return resp.data or []
+
+# Store AI results
+def store_emotion_result(user_id, journal_id, text_label=None, text_score=None, text_scores=None,
+                         audio_label=None, audio_score=None, audio_scores=None):
+    supabase.table("ai_analysis").insert({
+        "user_id": user_id,
+        "timestamp": datetime.datetime.now().isoformat(),
+        "day_label": text_label or audio_label,
+        "day_score": text_score or audio_score,
+        "text_emotion_label": text_label,
+        "text_scores": text_scores,
+        "audio_emotion_label": audio_label,
+        "audio_scores": audio_scores,
+    }).execute()
+    supabase.table("journal_entries").update({"processed": True}).eq("id", journal_id).execute()
+
+# Pipeline
+def pipeline_run():
+    entries = fetch_journal_entries()
+    for e in entries:
+        user_id, journal_id = e["user_id"], e["id"]
+        text_label = text_score = text_scores = None
+        audio_label = audio_score = audio_scores = None
+
+        if e.get("text_entry", "").strip():
+            text_label, text_score, text_scores = analyze_text(e["text_entry"])
+
+        if e.get("audio_entry"):
+            try:
+                audio_url = get_audio_public_url(e["audio_entry"])
+                if audio_url:
+                    wav_path = download_and_convert_to_wav(audio_url)
+                    audio_label, audio_score, audio_scores = analyze_audio(wav_path)
+                    os.remove(wav_path)
+            except Exception as ex:
+                print(f"[ERROR] Audio processing failed for entry {journal_id}: {ex}")
+
+        if text_label or audio_label:
+            store_emotion_result(user_id, journal_id, text_label, text_score, text_scores,
+                                 audio_label, audio_score, audio_scores)
+
+# FastAPI
+app = FastAPI()
+
+class JournalRequest(BaseModel):
+    text: str
+
+@app.post("/live_emotion_detect")
+def live_emotion_detect(payload: JournalRequest):
+    try:
+        label, score, _ = analyze_text(payload.text)
+        return {"emotion": label, "confidence": score}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Scheduler
+scheduler = BackgroundScheduler()
+scheduler.add_job(pipeline_run, "interval", minutes=3)
+scheduler.start()
+
+@app.on_event("startup")
+def on_startup():
+    pipeline_run()
