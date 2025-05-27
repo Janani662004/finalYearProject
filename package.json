@@ -2,6 +2,8 @@
   "dependencies": {
     "@react-navigation/native": "^7.1.7",
     "@react-navigation/native-stack": "^7.3.11",
+    "clsx": "^2.1.1",
+    "clx": "^1.0.0",
     "expo-router": "^5.0.5",
     "react": "^19.1.0",
     "react-native": "^0.79.2",

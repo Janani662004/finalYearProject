@@ -142,7 +142,7 @@ def scheduled_pipeline():
     print("⏰ Scheduled pipeline triggered!")
     pipeline_run()
 
-scheduler.add_job(scheduled_pipeline, 'interval', minutes=3)
+scheduler.add_job(scheduled_pipeline, 'interval', minutes=5)
 scheduler.start()
 
 @app.on_event("startup")

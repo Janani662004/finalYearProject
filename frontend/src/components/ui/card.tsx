@@ -1,18 +1,16 @@
-import {View,Text} from"react-native";
-export function Card({ children }:{children:React.ReactNode}) {
-    return(
-        <View
-        style={{
-            padding:16,
-            borderRadius:8,
-            backgroundColor:"#fff",
-            shadowColor:"#000",
-            shadowOpacity:0.1,
-            shadowRadius:4,
-            elevation:3,
-        }}
-        >
-            {children}
-        </View>
-    );
-}
+import React from "react";
+import { View, ViewProps } from "react-native";
+import clsx from "clsx";
+
+type CardProps = {
+  children: React.ReactNode;
+  className?: string;
+} & ViewProps;
+
+export const Card: React.FC<CardProps> = ({ children, className, ...rest }) => {
+  return (
+    <View className={clsx("rounded-xl bg-white shadow-md", className)} {...rest}>
+      {children}
+    </View>
+  );
+};

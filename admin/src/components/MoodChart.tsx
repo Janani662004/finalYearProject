@@ -1,4 +1,3 @@
-
 import { 
   LineChart, 
   Line, 
@@ -9,18 +8,11 @@ import {
   ResponsiveContainer 
 } from 'recharts';
 
-export const MoodChart = () => {
-  // Sample data for mood over a week
-  const data = [
-    { day: 'SUN', mood: 2 },
-    { day: 'MON', mood: 1 },
-    { day: 'TUE', mood: 1.5 },
-    { day: 'WED', mood: 4 },
-    { day: 'THU', mood: 4 },
-    { day: 'FRI', mood: 3 },
-    { day: 'SAT', mood: 4 }
-  ];
+interface MoodChartProps {
+  data: { day: string; mood: number }[];
+}
 
+export const MoodChart = ({ data }: MoodChartProps) => {
   // Custom tooltip content
   const CustomTooltip = ({ active, payload, label }: any) => {
     if (active && payload && payload.length) {

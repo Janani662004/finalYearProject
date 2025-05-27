@@ -1,74 +1,183 @@
-import React from "react";
-import { View, Text, ScrollView } from "react-native";
+import React, { useEffect, useState } from "react";
+import {
+  View,
+  Text,
+  ScrollView,
+  ActivityIndicator,
+  Dimensions,
+  ImageBackground,
+  StyleSheet,
+} from "react-native";
 import { LineChart } from "react-native-chart-kit";
-import { Card } from "../src/components/ui/card";
+import { supabase } from "../lib/supabase";
 import { Ionicons } from "@expo/vector-icons";
 
+const screenWidth = Dimensions.get("window").width;
+
+const chartConfig = {
+  backgroundGradientFrom: "#ffffff00",
+  backgroundGradientTo: "#ffffff00",
+  decimalPlaces: 0,
+  color: (opacity = 1) => `rgba(0, 51, 102, ${opacity})`,
+  labelColor: (opacity = 1) => `rgba(0, 51, 102, ${opacity})`,
+  propsForDots: {
+    r: "5",
+    strokeWidth: "2",
+    stroke: "#003366",
+  },
+};
+
 const PerformanceScreen = () => {
+  const [loading, setLoading] = useState(true);
+  const [moodData, setMoodData] = useState<number[]>([]);
+  const [dayLabels, setDayLabels] = useState<string[]>([]);
+  const [topTextEmotion, setTopTextEmotion] = useState("Loading...");
+  const [topAudioEmotion, setTopAudioEmotion] = useState("Loading...");
+  const [depressionLevel, setDepressionLevel] = useState("Loading...");
+  const [userId, setUserId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const getUserId = async () => {
+      const { data, error } = await supabase.auth.getUser();
+      if (error) console.error("User fetch error:", error.message);
+      else setUserId(data?.user?.id ?? null);
+    };
+    getUserId();
+  }, []);
+
+  useEffect(() => {
+    const fetchData = async () => {
+      if (!userId) return;
+      setLoading(true);
+
+      const { data, error } = await supabase
+        .from("ai_analysis")
+        .select("*")
+        .eq("user_id", userId)
+        .order("timestamp", { ascending: true })
+        .limit(7);
+
+      if (error) {
+        console.error("Fetch error:", error.message);
+        setLoading(false);
+        return;
+      }
+
+      if (data && data.length > 0) {
+        const scores = data.map((entry) => entry.day_score ?? 0);
+        setMoodData(scores);
+
+        const labels = data.map((entry) =>
+          new Date(entry.timestamp).toLocaleDateString("en-US", { weekday: "short" })
+        );
+        setDayLabels(labels);
+
+        setTopTextEmotion(data[0]?.text_emotion_label || "Unknown");
+        setTopAudioEmotion(data[0]?.audio_emotion_label || "Unknown");
+
+        const avgScore = scores.reduce((a, b) => a + b, 0) / scores.length;
+        if (avgScore <= 30) setDepressionLevel("⚠️ High Depression Risk");
+        else if (avgScore <= 60) setDepressionLevel("😐 Moderate Depression Risk");
+        else setDepressionLevel("🙂 Low Depression Risk");
+      }
+
+      setLoading(false);
+    };
+
+    fetchData();
+  }, [userId]);
+
   return (
-    <ScrollView className="flex-1 bg-gradient-to-b from-[#ffecd2] to-[#fcb69f] p-4">
-      <Card className="p-4 rounded-2xl bg-white shadow-lg">
-        <Text className="text-lg font-semibold mb-2 text-[#ff7e5f]">Moods</Text>
-        <LineChart
-          data={{
-            labels: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
-            datasets: [{ data: [1, 4, 2, 3, 5, 3, 4] }],
-          }}
-          width={320}
-          height={220}
-          yAxisLabel=""
-          chartConfig={{
-            backgroundGradientFrom: "#ff9a9e",
-            backgroundGradientTo: "#fad0c4",
-            decimalPlaces: 0,
-            color: (opacity = 1) => `rgba(255, 255, 255, ${opacity})`,
-          }}
-          bezier
-        />
-      </Card>
+    <ImageBackground
+      source={require("../assets/fox-bg.png")}
+      style={styles.background}
+      imageStyle={{ opacity: 0.06 }}
+    >
+      <ScrollView contentContainerStyle={styles.container}>
+        {loading ? (
+          <ActivityIndicator size="large" color="#003366" />
+        ) : (
+          <View style={styles.card}>
+            <Text style={styles.title}>Mood Tracker</Text>
 
-      <Card className="p-4 mt-4 rounded-2xl bg-white shadow-lg">
-        <Text className="text-lg font-semibold mb-2 text-[#ff7e5f]">Weekly Summary</Text>
-        <Text className="text-base text-gray-600">AI-generated insights here...</Text>
-      </Card>
+            <LineChart
+              data={{
+                labels: dayLabels,
+                datasets: [{ data: moodData }],
+              }}
+              width={screenWidth - 40}
+              height={220}
+              chartConfig={chartConfig}
+              bezier
+              style={styles.chart}
+            />
 
-      <Card className="p-4 mt-4 rounded-2xl bg-white shadow-lg">
-        <Text className="text-lg font-semibold mb-2 text-[#ff7e5f]">Reflection</Text>
-        <View className="flex-row items-center gap-2">
-          <Ionicons name="happy" size={24} color="#FFD700" />
-          <Text className="text-2xl font-bold text-yellow-500">Peaceful</Text>
-        </View>
-        <View className="flex-row items-center gap-2">
-          <Ionicons name="sad" size={24} color="#FF4500" />
-          <Text className="text-lg text-red-400">Stressed</Text>
-        </View>
-        <View className="flex-row items-center gap-2">
-          <Ionicons name="moon" size={24} color="#32CD32" />
-          <Text className="text-lg text-green-500">Tired</Text>
-        </View>
-      </Card>
+            <Text style={styles.levelText}>{depressionLevel}</Text>
 
-      <Card className="p-4 mt-4 rounded-2xl bg-white shadow-lg">
-        <Text className="text-lg font-semibold mb-2 text-[#ff7e5f]">Sleep</Text>
-        <LineChart
-          data={{
-            labels: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
-            datasets: [{ data: [6, 7, 5, 8, 6, 7, 6] }],
-          }}
-          width={320}
-          height={220}
-          yAxisLabel="hrs"
-          chartConfig={{
-            backgroundGradientFrom: "#ff9a9e",
-            backgroundGradientTo: "#fad0c4",
-            decimalPlaces: 0,
-            color: (opacity = 1) => `rgba(255,255,255,${opacity})`,
-          }}
-          bezier
-        />
-      </Card>
-    </ScrollView>
+            <View style={styles.emotions}>
+              <Text style={styles.label}>
+                <Ionicons name="text" size={16} /> Text Emotion:{" "}
+                <Text style={styles.value}>{topTextEmotion}</Text>
+              </Text>
+              <Text style={styles.label}>
+                <Ionicons name="mic" size={16} /> Audio Emotion:{" "}
+                <Text style={styles.value}>{topAudioEmotion}</Text>
+              </Text>
+            </View>
+          </View>
+        )}
+      </ScrollView>
+    </ImageBackground>
   );
 };
+
+const styles = StyleSheet.create({
+  background: {
+    flex: 1,
+  },
+  container: {
+    padding: 20,
+    alignItems: "center",
+  },
+  card: {
+    backgroundColor: "rgba(255,255,255,0.9)",
+    borderRadius: 20,
+    padding: 20,
+    width: "100%",
+    shadowColor: "#000",
+    shadowOpacity: 0.15,
+    shadowRadius: 10,
+    elevation: 5,
+  },
+  title: {
+    fontSize: 20,
+    color: "#003366",
+    fontWeight: "bold",
+    marginBottom: 10,
+    textAlign: "center",
+  },
+  chart: {
+    borderRadius: 16,
+  },
+  levelText: {
+    textAlign: "center",
+    marginTop: 12,
+    fontSize: 16,
+    fontWeight: "600",
+    color: "#003366",
+  },
+  emotions: {
+    marginTop: 16,
+  },
+  label: {
+    fontSize: 14,
+    color: "#444",
+    marginBottom: 6,
+  },
+  value: {
+    fontWeight: "600",
+    color: "#003366",
+  },
+});
 
 export default PerformanceScreen;
